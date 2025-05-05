@@ -20,7 +20,7 @@ class Config:
         self.page_icon = "📚"
         self.layout = "wide"
         self.sidebar_state = "expanded"
-        self.version = "0.5.0"
+        self.version = "0.6.0"
         self.author = "권준희"
         self.where = "연세대학교 교육학과"
         self.contact = "wnsgml9807@naver.com"
@@ -72,6 +72,15 @@ class SessionManager:
         if 'logged_in' not in st.session_state:
             st.session_state['logged_in'] = False
             st.session_state['username'] = None
+            
+        if "current_agent" not in st.session_state:
+            st.session_state["current_agent"] = "supervisor"  
+
+        # 추가된 세션 상태 값 초기화
+        if "last_stream_ending_agent" not in st.session_state:
+            st.session_state.last_stream_ending_agent = None # 또는 "supervisor"로 초기화 가능
+        if "is_first_stream_for_session" not in st.session_state:
+            st.session_state.is_first_stream_for_session = True
 
     @staticmethod
     def reset_session(logger):
@@ -95,6 +104,10 @@ class SessionManager:
         st.session_state.is_streaming = False
         st.session_state['logged_in'] = False # 리셋 시 로그아웃 상태로
         st.session_state['username'] = None
+
+        # 추가된 세션 상태 값 초기화
+        st.session_state.last_stream_ending_agent = None
+        st.session_state.is_first_stream_for_session = True
 
     @staticmethod
     def add_message(role, content):
@@ -280,6 +293,8 @@ class MessageRenderer:
             return "기출 DB 검색"
         elif tool_name == "subject_collection":
             return "기출 주제 조회"
+        elif tool_name == "concept_map_manual":
+            return "개념 지도 작성 지침 열람"
         # 다른 도구 이름 변환 규칙 추가 가능
         return tool_name
     
@@ -437,6 +452,8 @@ class BackendClient:
             return "기출 DB 검색"
         elif tool_name == "subject_collection":
             return "기출 주제 조회"
+        elif tool_name == "concept_map_manual":
+            return "개념 지도 작성 지침 열람"
         # 다른 도구 이름 변환 규칙 추가 가능
         return tool_name
 
@@ -482,51 +499,57 @@ class BackendClient:
         """Process streaming response from backend"""
         current_idx = 0
         current_text = ""
-        current_agent = "supervisor"
+        previous_chunk_agent = None
         artifact_type = "chat"
-        has_ended = False  # 정상 종료 여부 추적
+        has_ended = False
+        pending_tool_status_update = None
 
-        # 이전 도구 상태 업데이트를 위한 정보 저장 변수
-        pending_tool_status_update: Dict[str, Any] | None = None
+        # --- 세션 상태 값 가져오기 ---
+        is_this_the_first_stream_of_session = st.session_state.is_first_stream_for_session
+        last_stream_agent = st.session_state.last_stream_ending_agent
+        # --- ------------------- ---
 
         try:
             # 초기 상태 설정
             with self.chat_container:
                 self.response_status.update(label="에이전트 응답 중...", state="running")
 
+            # --- 첫 스트림 플래그 업데이트 ---
+            if is_this_the_first_stream_of_session:
+                st.session_state.is_first_stream_for_session = False # 이제 첫 스트림 아님
+            # --- ----------------------- ---
+
             for line in response.iter_lines(decode_unicode=True):
-                if not line:
-                    continue
+                if not line: continue
 
+                # --- 이전 도구 상태 업데이트 (매 루프 시작 시) ---
+                if pending_tool_status_update is not None:
+                    prev_tool_name = pending_tool_status_update["tool_name"]
+                    status_obj = pending_tool_status_update["status_obj"]
+                    friendly_prev_tool_name = self._get_friendly_tool_name(prev_tool_name)
+                    try:
+                        status_obj.update(label=f"{friendly_prev_tool_name} 완료", state="complete", expanded=False)
+                    except Exception as e:
+                        self.logger.error(f"Error updating tool status ({friendly_prev_tool_name}): {e}", exc_info=True)
+                    pending_tool_status_update = None # 업데이트 완료
+
+                # --- 현재 라인 처리 ---
                 try:
-                    # --- 이전 도구 상태 업데이트 (매 루프 시작 시) ---
-                    if pending_tool_status_update is not None:
-                        prev_tool_name = pending_tool_status_update["tool_name"]
-                        status_obj = pending_tool_status_update["status_obj"]
-                        # Get friendly name for display
-                        friendly_prev_tool_name = self._get_friendly_tool_name(prev_tool_name)
-                        try:
-                            status_obj.update(label=f"{friendly_prev_tool_name} 완료", state="complete", expanded=False)
-                        except Exception as e:
-                            self.logger.error(f"Error updating tool status ({friendly_prev_tool_name}): {e}", exc_info=True)
-                        pending_tool_status_update = None # 업데이트 완료
-
-                    # --- 현재 라인 처리 ---
                     payload = json.loads(line)
                     msg_type = payload.get("type", "message")
                     text = payload.get("text", "")
-                    agent = payload.get("response_agent", "unknown")
+                    current_chunk_agent = payload.get("response_agent", "unknown")
 
                     # --- 스트림 종료 처리 ---
-                    if msg_type == "end" and agent == "system":
+                    if msg_type == "end" and current_chunk_agent == "system":
                         if current_text: # 남은 텍스트 처리
-                            self._update_artifact(current_text, artifact_type, placeholders, current_idx, is_final=True)
-                            message_data["messages"].append({"type": "text", "content": current_text, "agent": current_agent})
-                            # 핵심 로그: 최종 에이전트 응답
-                            self.logger.info(f'User [{st.session_state.get("username", "anonymous")}]: 에이전트 응답:{current_agent}\n{current_text}')
+                            last_agent = previous_chunk_agent if previous_chunk_agent is not None else "unknown"
+                            last_artifact_type = self._determine_artifact_type(last_agent)
+                            self._update_artifact(current_text, last_artifact_type, placeholders, current_idx, is_final=True)
+                            message_data["messages"].append({"type": "text", "content": current_text, "agent": last_agent})
+                            self.logger.info(f'User [{st.session_state.get("username", "anonymous")}]: 에이전트 응답:{last_agent}\\n{current_text}')
                             current_idx += 1
                             current_text = ""
-
                         self.response_status.update(label="에이전트의 응답이 종료되었습니다.", state="complete")
                         message_data["messages"].append({"type": "agent_change", "agent": "system", "info": "end"})
                         has_ended = True
@@ -535,62 +558,83 @@ class BackendClient:
                     # --- 에러 메시지 처리 ---
                     elif msg_type == "error":
                         if current_text: # 남은 텍스트 처리
-                            self._update_artifact(current_text, artifact_type, placeholders, current_idx, is_final=True)
-                            self.logger.info(f'User [{st.session_state.get("username", "anonymous")}]: 에이전트 응답:{current_agent}\n{current_text}')
-                            message_data["messages"].append({"type": "text", "content": current_text, "agent": current_agent})
+                            last_agent = previous_chunk_agent if previous_chunk_agent is not None else "unknown"
+                            last_artifact_type = self._determine_artifact_type(last_agent)
+                            self._update_artifact(current_text, last_artifact_type, placeholders, current_idx, is_final=True)
+                            self.logger.info(f'User [{st.session_state.get("username", "anonymous")}]: 에이전트 응답:{last_agent}\\n{current_text}')
+                            message_data["messages"].append({"type": "text", "content": current_text, "agent": last_agent})
                             current_idx += 1
                             current_text = ""
-
                         self.response_status.update(label="에러 발생 : " + text, state="error")
                         message_data["messages"].append({"type": "agent_change", "agent": "system", "info": "error", "content": text})
                         with placeholders[current_idx].container(border=False):
                             st.error(text)
                         current_idx += 1
+                        previous_chunk_agent = current_chunk_agent # 에러 시점 에이전트 기록
                         continue
 
-                    # --- 에이전트 변경 처리 ---
-                    if agent != current_agent:
-                        if current_text: # 남은 텍스트 처리
-                           self._update_artifact(current_text, artifact_type, placeholders, current_idx, is_final=True)
-                           self.logger.info(f'User [{st.session_state.get("username", "anonymous")}]: 에이전트 응답:{current_agent}\n{current_text}')
-                           message_data["messages"].append({"type": "text", "content": current_text, "agent": current_agent})
-                           current_idx += 1
-                           current_text = ""
+                    # --- 핸드오프 메시지 표시 로직 (수정됨: 플래그 제거) ---
+                    # 조건 1: 스트림 시작 시 (첫 청크) 핸드오프 감지
+                    if (previous_chunk_agent is None and
+                        not is_this_the_first_stream_of_session and
+                        last_stream_agent is not None and
+                        current_chunk_agent != last_stream_agent and
+                        current_chunk_agent != "system"):
+                        # not handoff_message_shown_this_stream 조건 제거
 
-                        if agent != "system": # 에이전트 변경 메시지 표시
-                            self.logger.info(f'User [{st.session_state.get("username", "anonymous")}]: 에이전트 변경:{current_agent} to {agent}')
-                            with placeholders[current_idx].container(border=False):
-                                st.info(f"{agent} 에이전트에게 통제권을 전달합니다.")
-                            message_data["messages"].append({"type": "agent_change","agent": agent,"info": "handoff"})
+                        self.logger.info(f'User [{st.session_state.get("username", "anonymous")}]: 스트림 시작 시 핸드오프 감지: {last_stream_agent} -> {current_chunk_agent}')
+                        with placeholders[current_idx].container(border=False):
+                            st.info(f"{current_chunk_agent} 에이전트에게 통제권을 전달합니다.")
+                        message_data["messages"].append({"type": "agent_change", "agent": current_chunk_agent, "info": "handoff_start"})
+                        current_idx += 1
+                        # handoff_message_shown_this_stream = True # 플래그 업데이트 제거
+
+                    # 조건 2: 스트림 도중 핸드오프 감지
+                    elif (previous_chunk_agent is not None and
+                          current_chunk_agent != previous_chunk_agent and
+                          current_chunk_agent != "system"):
+                          # not handoff_message_shown_this_stream 조건 제거
+
+                        # 변경 직전 텍스트 처리 (previous_chunk_agent 기준)
+                        if current_text:
+                            prev_artifact_type = self._determine_artifact_type(previous_chunk_agent)
+                            self._update_artifact(current_text, prev_artifact_type, placeholders, current_idx, is_final=True)
+                            self.logger.info(f'User [{st.session_state.get("username", "anonymous")}]: 에이전트 응답:{previous_chunk_agent}\\n{current_text}')
+                            message_data["messages"].append({"type": "text", "content": current_text, "agent": previous_chunk_agent})
                             current_idx += 1
-                        current_agent = agent # current_agent 업데이트
+                            current_text = ""
 
-                    artifact_type = self._determine_artifact_type(agent)
+                        self.logger.info(f'User [{st.session_state.get("username", "anonymous")}]: 스트림 중 핸드오프 감지: {previous_chunk_agent} -> {current_chunk_agent}')
+                        with placeholders[current_idx].container(border=False):
+                             st.info(f"{current_chunk_agent} 에이전트에게 통제권을 전달합니다.")
+                        message_data["messages"].append({"type": "agent_change", "agent": current_chunk_agent, "info": "handoff_midstream"})
+                        current_idx += 1
+                        # handoff_message_shown_this_stream = True # 플래그 업데이트 제거
+                    # --- ------------------------------------------------- ---
 
-                    # --- 메시지 유형별 처리 ---
+                    # --- 이후 로직 (메시지/툴 처리) ---
+                    artifact_type = self._determine_artifact_type(current_chunk_agent)
+
                     if msg_type == "message":
                         current_text += text
                         self._update_artifact(current_text, artifact_type, placeholders, current_idx)
-
                     elif msg_type == "tool":
+                        # 도구 실행 전 텍스트 처리 (current_chunk_agent 기준)
                         if current_text:
                            self._update_artifact(current_text, artifact_type, placeholders, current_idx, is_final=True)
-                           self.logger.info(f'User [{st.session_state.get("username", "anonymous")}]: 에이전트 응답:{current_agent}\n{current_text}')
-                           message_data["messages"].append({"type": "text", "content": current_text, "agent": current_agent})
+                           self.logger.info(f'User [{st.session_state.get("username", "anonymous")}]: 에이전트 응답:{current_chunk_agent}\\n{current_text}')
+                           message_data["messages"].append({"type": "text", "content": current_text, "agent": current_chunk_agent})
                            current_idx += 1
                            current_text = ""
 
                         tool_name = payload.get("tool_name", "도구")
                         tool_content = text
-
-                        # Get friendly name for display
                         friendly_tool_name = self._get_friendly_tool_name(tool_name)
-
                         message_data["messages"].append({
                             "type": "tool",
                             "name": tool_name,
                             "content": tool_content,
-                            "agent": current_agent
+                            "agent": current_chunk_agent
                         })
 
                         if tool_name == "mermaid_tool":
@@ -598,37 +642,41 @@ class BackendClient:
                                 try:
                                     mermaid_key = f"mermaid_render_{uuid.uuid4()}"
                                     stmd.st_mermaid(tool_content, key=mermaid_key)
-                            
                                 except Exception as e:
                                     st.error(f"Mermaid 렌더링 중 오류 발생: {e}")
                                     st.code(tool_content)
                                     self.logger.error(f"Mermaid 렌더링 오류: {e}", exc_info=True)
                             current_idx += 1
                         else:
-                            # '실행 중' 상태로 생성 및 pending_tool_status_update 설정
                             current_placeholder = placeholders[current_idx]
-                            # 레이블에 ' 실행 중...' 다시 추가
                             status_obj = current_placeholder.status(f"{friendly_tool_name} 중...", state="running", expanded=False)
-                            # Store the ORIGINAL tool_name in pending update for logic, but we'll use friendly name on update
                             pending_tool_status_update = { "tool_name": tool_name, "status_obj": status_obj }
                             current_idx += 1
 
+                    # --- 루프 마지막: 이전 청크 에이전트 업데이트 ---
+                    previous_chunk_agent = current_chunk_agent
+
                 except json.JSONDecodeError as e:
-                    self._handle_json_error(e, line, placeholders, current_idx) # 에러 처리 및 로깅 유지
+                    self._handle_json_error(e, line, placeholders, current_idx)
+                    current_idx += 1 # 에러 메시지 표시 후 인덱스 증가
                 except Exception as e:
-                    self._handle_stream_error(e, placeholders, current_idx) # 에러 처리 및 로깅 유지
-            
-            # --- 스트림 루프 종료 후 처리 --- 
+                    self._handle_stream_error(e, placeholders, current_idx)
+                    current_idx += 1 # 에러 메시지 표시 후 인덱스 증가
+
+            # --- 스트림 루프 종료 후 처리 ---
             if not has_ended and current_text:
-                 self._update_artifact(current_text, artifact_type, placeholders, current_idx, is_final=True)
-                 # 핵심 로그: 최종 에이전트 응답 (스트림 비정상 종료 시)
-                 self.logger.info(f'User [{st.session_state.get("username", "anonymous")}]: 최종 에이전트 응답:{current_agent}\n{current_text}')
-                 message_data["messages"].append({"type": "text","content": current_text,"agent": current_agent})
-                 current_idx += 1 # 마지막 텍스트 추가 후 인덱스 증가
-        
+                 last_processed_agent = previous_chunk_agent if previous_chunk_agent is not None else "unknown"
+                 last_artifact_type = self._determine_artifact_type(last_processed_agent)
+                 self._update_artifact(current_text, last_artifact_type, placeholders, current_idx, is_final=True)
+                 self.logger.info(f'User [{st.session_state.get("username", "anonymous")}]: 최종 에이전트 응답:{last_processed_agent}\\n{current_text}')
+                 message_data["messages"].append({"type": "text","content": current_text,"agent": last_processed_agent})
+
         finally:
-            # st.session_state.is_streaming = False # 로그 제거
-            pass # 로깅 불필요
+            # --- 마지막 에이전트 상태 저장 ---
+            if previous_chunk_agent is not None:
+                 st.session_state.last_stream_ending_agent = previous_chunk_agent
+            # --- ----------------------- ---
+            st.session_state.is_streaming = False # 스트리밍 종료 시 플래그 해제
 
         return message_data
     
@@ -822,7 +870,7 @@ def show_main_app(config, logger):
             st.markdown("🎯*예시 2: 최신 기술을 설명하는 고난도 지문을 써 봐.*")
             st.markdown("🎯*예시 3: 여러 학자들의 관점을 비교하는 문제를 만들어 줘.*")
             st.markdown(" ")
-            st.markdown("ver : 0.5.0")
+            st.markdown("ver : 0.6.0")
     
     
     # --- 기존 메시지 표시 ---
