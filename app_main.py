@@ -810,8 +810,8 @@ def show_main_app(config, logger):
             st.title("KSAT Agent")
             st.subheader("🔐 로그인")
 
-            input_username = st.text_input("username", key="login_username", value="admin", placeholder="사용자 이름" ) # 키 추가/변경
-            input_password = st.text_input("key", type="password", key="login_password", value="1111", placeholder="4자리 숫자") # 키 추가/변경
+            input_username = st.text_input("username", key="login_username", placeholder="사용자/기관명" ) # 키 추가/변경
+            input_password = st.text_input("key", type="password", key="login_password", placeholder="비밀번호") # 키 추가/변경
         
             if st.button("로그인", key="login_button", type="primary"): # 키 추가/변경
                 login_successful = False
@@ -845,7 +845,7 @@ def show_main_app(config, logger):
                      logger.error(f"로그인 처리 중 오류 발생: {e}", exc_info=True)
                      st.error(f"로그인 중 오류가 발생했습니다: {e}")
                 
-            st.info("로그인 기능 테스트 중입니다. 입력된 계정으로 로그인하세요.")
+            st.info("미리 안내된 계정 정보로 로그인하세요.")
 
         st.stop() # 로그인 안 된 상태면 아래 코드 실행 안 함
 
