@@ -16,7 +16,7 @@ from typing import Dict, Any
 class Config:
     """Application configuration settings"""
     def __init__(self):
-        self.page_title = "KSAT 국어 출제용 AI"
+        self.page_title = "KSAT Agent"
         self.page_icon = "📚"
         self.layout = "wide"
         self.sidebar_state = "expanded"
@@ -85,27 +85,40 @@ class SessionManager:
     @staticmethod
     def reset_session(logger):
         """Reset the session state, preserving session_id and viewport_height"""
-        # Get current session_id and viewport_height to preserve them
         current_session_id = st.session_state.get("session_id")
         current_viewport_height = st.session_state.get("viewport_height")
-        # 로그인 사용자 정보 로깅 추가
-        current_user = st.session_state.get('username', 'anonymous')
-        logger.info(f"User [{current_user}]: 세션 리셋 요청.")
+        logger.info(f"세션 리셋 요청 (ID: {current_session_id}).")
+
+        # --- 백엔드에 세션 삭제 요청 추가 ---
+        if current_session_id:
+            try:
+                config = Config() # 백엔드 URL을 가져오기 위해 Config 인스턴스 생성
+                backend_url = config.backend_url
+                delete_url = f"{backend_url}/sessions/{current_session_id}"
+                response = requests.delete(delete_url, timeout=10)
+                if response.status_code == 200:
+                    logger.info(f"백엔드 세션 (ID: {current_session_id}) 삭제 성공.")
+                    st.toast(f"서버의 세션 기록(ID: {current_session_id})이 삭제되었습니다.", icon="🗑️")
+                else:
+                    logger.error(f"백엔드 세션 (ID: {current_session_id}) 삭제 실패: {response.status_code} - {response.text}")
+                    st.toast(f"서버 세션 기록 삭제 실패 (오류: {response.status_code})", icon="⚠️")
+            except requests.exceptions.RequestException as e:
+                logger.error(f"백엔드 세션 (ID: {current_session_id}) 삭제 요청 중 오류: {e}")
+                st.toast(f"서버 세션 기록 삭제 중 통신 오류 발생", icon="🚨")
+            except Exception as e:
+                logger.error(f"세션 삭제 중 예기치 않은 오류 (ID: {current_session_id}): {e}", exc_info=True)
+                st.toast(f"세션 삭제 중 알 수 없는 오류 발생", icon="🚨")
+        # --- --------------------------- ---
 
         # Clear all other session state variables
         keys_to_clear = list(st.session_state.keys())
         for key in keys_to_clear:
-            # session_id 와 viewport_height 를 제외하고 모두 삭제
             if key not in ["session_id", "viewport_height"]:
                 del st.session_state[key]
         
-        # Re-initialize necessary session variables (like messages, login status)
         st.session_state.messages = []
         st.session_state.is_streaming = False
-        st.session_state['logged_in'] = False # 리셋 시 로그아웃 상태로
-        st.session_state['username'] = None
 
-        # 추가된 세션 상태 값 초기화
         st.session_state.last_stream_ending_agent = None
         st.session_state.is_first_stream_for_session = True
 
@@ -177,7 +190,7 @@ class UI:
     def create_sidebar(config, logger):
         """Create sidebar, detect screen height, and update session state."""
         with st.sidebar:
-            st.title("수능 독서 출제용 Agent")
+            st.title("KSAT Agent")
             st.write(f"version {config.version}")
             
             st.info(
@@ -215,10 +228,10 @@ class UI:
 
 
             # Session reset button
-            if st.button("🔄️ 세션 초기화"):
+            if st.button("🔄️ 대화 새로고침"):
                 # 리셋 시 viewport_height는 SessionManager.reset_session에서 유지됨
                 SessionManager.reset_session(logger)
-                st.success("세션이 초기화되었습니다. (화면 높이 정보 유지됨)")
+                st.success("대화 기록이 초기화됩니다.")
                 time.sleep(1)
                 st.rerun()
 
@@ -845,7 +858,7 @@ def show_main_app(config, logger):
                      logger.error(f"로그인 처리 중 오류 발생: {e}", exc_info=True)
                      st.error(f"로그인 중 오류가 발생했습니다: {e}")
                 
-            st.info("미리 안내된 계정 정보로 로그인하세요.")
+            st.info("""미리 안내된 계정 정보로 로그인하세요.\n\n계정 문의: wnsgml9807@naver.com""")
 
         st.stop() # 로그인 안 된 상태면 아래 코드 실행 안 함
 
