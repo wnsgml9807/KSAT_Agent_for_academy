@@ -1,5 +1,5 @@
 import streamlit as st
-from st_screen_stats import ScreenData
+from st_screen_stats import ScreenData  # 화면 크기 감지용 컴포넌트
 import logging
 import os
 import uuid
@@ -10,6 +10,7 @@ import time
 import streamlit_mermaid as stmd  # 머메이드 라이브러리 추가
 from streamlit import Page # Import Page
 import hashlib # 비밀번호 해싱을 위해 추가
+from functools import partial # 다이얼로그 함수에 인자 전달용
 from typing import Dict, Any
 
 # Configuration class for app settings
@@ -84,19 +85,16 @@ class SessionManager:
 
     @staticmethod
     def reset_session(logger):
-        """Reset the session state locally: keep viewport height, generate new session_id."""
-        # 현재 뷰포트 높이는 유지
-        current_viewport_height = st.session_state.get("viewport_height")
+        """모든 세션 상태를 완전히 초기화하고 새 세션 ID를 생성합니다."""
 
         # 신규 세션 ID 생성
         new_session_id = f"session_{uuid.uuid4()}"
         logger.info(f"세션 리셋(로컬) 요청 → 새로운 세션 ID 생성: {new_session_id}")
 
-        # 모든 세션 상태 초기화 (viewport_height 제외)  
+        # 모든 세션 상태 완전 초기화
         keys_to_clear = list(st.session_state.keys())
         for key in keys_to_clear:
-            if key not in ["viewport_height"]:
-                del st.session_state[key]
+            del st.session_state[key]
 
         # 필수 기본값 재설정
         st.session_state["session_id"] = new_session_id
@@ -104,10 +102,7 @@ class SessionManager:
         st.session_state.is_streaming = False
         st.session_state.last_stream_ending_agent = None
         st.session_state.is_first_stream_for_session = True
-
-        # 뷰포트 높이 복원
-        if current_viewport_height is not None:
-            st.session_state.viewport_height = current_viewport_height
+        st.session_state.viewport_height = 800
 
     @staticmethod
     def add_message(role, content):
@@ -172,7 +167,23 @@ class UI:
         </style>
         """, unsafe_allow_html=True)
     
-
+    # 대화 기록 초기화 확인 다이얼로그
+    @staticmethod
+    @st.dialog("확인", width="small")
+    def reset_confirm_dialog(logger):
+        """대화 기록 초기화 확인 다이얼로그"""
+        st.warning("대화 기록이 전부 삭제됩니다. 복구는 불가능합니다. 정말로 초기화 하시겠습니까?")
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("예", type="primary", use_container_width=True):
+                # 세션 리셋 실행
+                SessionManager.reset_session(logger)
+                st.success("대화 기록이 초기화되었습니다.")
+                st.rerun()
+        with col2:
+            if st.button("아니오", use_container_width=True):
+                st.rerun()
+    
     @staticmethod
     def create_sidebar(config, logger):
         """Create sidebar, detect screen height, and update session state."""
@@ -182,45 +193,32 @@ class UI:
             
             st.info(
                 f"""
-                **제작자:** {config.author}
-                {config.contact}
+                **오류 및 계정 문의**\n{config.contact}
                 """
             )
             
-            # --- 사이드바에서 높이 감지 및 세션 상태 업데이트 ---
-            # 스트리밍 중이 아닐 때만 화면 크기 감지 실행
+            # --- 뷰포트 감지: 투명 컨테이너 안에서 실행하여 사용자에게 노출되지 않음 ---
+            if "viewport_height" not in st.session_state:
+                st.session_state.viewport_height = 800  # 기본값
+
+            # 스트리밍 중에는 뷰포트 감지 컴포넌트를 실행하지 않아 끊김 방지
             if not st.session_state.get("is_streaming", False):
                 try:
-                    screen_data = ScreenData()
-                    stats = screen_data.st_screen_data() # 컴포넌트 로딩 및 값 가져오기
-
-                    if stats and "innerHeight" in stats:
-                        height = stats.get("innerHeight")
-                        if height is not None and isinstance(height, (int, float)) and height > 0:
-                            # 세션 상태에 최신 높이 저장/업데이트 (현재 높이와 다를 경우에만 업데이트 고려 가능)
-                            if st.session_state.get("viewport_height") != height:
-                                st.session_state.viewport_height = height
-                        else:
-                            pass
+                    with st.container(height=1, border=False):  # 거의 보이지 않는 높이
+                        screen_data_component = ScreenData(setTimeout=700)
+                        stats = screen_data_component.st_screen_data()
+                    if stats and isinstance(stats, dict):
+                        height_val = stats.get("innerHeight") or stats.get("height") or None
+                        if height_val and isinstance(height_val, (int, float)) and height_val > 0:
+                            st.session_state.viewport_height = int(height_val)
                 except Exception as e:
-                    pass
-                    # 오류 발생 시에도 세션 상태에 viewport_height가 없으면 기본값 설정
-                    if "viewport_height" not in st.session_state:
-                         st.session_state.viewport_height = 800 # 기본값 설정
-
-            # 현재 세션의 높이 값 확인 (디버깅용, 로깅 불필요 시 주석 처리)
-            # current_height_in_state = st.session_state.get("viewport_height", 800)
-            # logger.info(f"현재 세션 뷰포트 높이 (사이드바 로딩 시점): {current_height_in_state}px")
-            # --- --------------------------------------- ---
-
+                    # 오류는 로거에만 남기고 UI에는 노출하지 않음
+                    logger.debug(f"Viewport detect error: {e}")
 
             # Session reset button
+            # 대화 새로고침 버튼 - 클릭 시 다이얼로그 표시
             if st.button("🔄️ 대화 새로고침", use_container_width=True):
-                # 리셋 시 viewport_height는 SessionManager.reset_session에서 유지됨
-                SessionManager.reset_session(logger)
-                st.success("대화 기록이 초기화됩니다.")
-                time.sleep(1)
-                st.rerun()
+                UI.reset_confirm_dialog(logger)  # 다이얼로그 호출
 
             # --- 로그아웃 버튼 추가 (로그인 상태일 때만 표시) ---
             if st.session_state.get('logged_in', False):
@@ -233,7 +231,6 @@ class UI:
                     # 필요한 다른 세션 상태도 초기화 가능
                     # SessionManager.reset_session(logger) # 또는 전체 리셋
                     st.success(f"{username}님, 로그아웃되었습니다.")
-                    time.sleep(1)
                     st.rerun() # 로그아웃 시 페이지 새로고침하여 로그인 폼 표시
             # --- --------------------------------------- ---
     
@@ -272,10 +269,13 @@ class UI:
     @staticmethod
     def calculate_viewport_height(screen_height):
         """Calculate viewport height based on screen height"""
-        if screen_height is not None:
-            return max(int(screen_height) - 250, 300)
-        else:
-            return 300 # Keep default
+        try:
+            if screen_height is not None:
+                return max(int(screen_height) - 250, 300)
+            else:
+                return 300
+        except Exception:
+            return 300
 
 # Message Handling
 class MessageRenderer:
@@ -813,7 +813,7 @@ def show_main_app(config, logger):
             input_username = st.text_input("username", key="login_username", placeholder="사용자/기관명" ) # 키 추가/변경
             input_password = st.text_input("key", type="password", key="login_password", placeholder="비밀번호") # 키 추가/변경
         
-            if st.button("로그인", key="login_button", type="primary"): # 키 추가/변경
+            if st.button("로그인", key="login_button", type="primary", use_container_width=True): # 키 추가/변경
                 login_successful = False
                 try:
                     # Secrets에서 사용자 정보 가져오기 (오류 처리 추가)
@@ -845,7 +845,7 @@ def show_main_app(config, logger):
                      logger.error(f"로그인 처리 중 오류 발생: {e}", exc_info=True)
                      st.error(f"로그인 중 오류가 발생했습니다: {e}")
                 
-            st.info("""미리 안내된 계정 정보로 로그인하세요.\n\n계정 문의: wnsgml9807@naver.com""")
+            st.info("""미리 안내된 계정 정보로 로그인하시면 채팅 앱 화면이 나타납니다.""")
 
         st.stop() # 로그인 안 된 상태면 아래 코드 실행 안 함
 
