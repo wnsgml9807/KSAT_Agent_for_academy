@@ -84,43 +84,30 @@ class SessionManager:
 
     @staticmethod
     def reset_session(logger):
-        """Reset the session state, preserving session_id and viewport_height"""
-        current_session_id = st.session_state.get("session_id")
+        """Reset the session state locally: keep viewport height, generate new session_id."""
+        # 현재 뷰포트 높이는 유지
         current_viewport_height = st.session_state.get("viewport_height")
-        logger.info(f"세션 리셋 요청 (ID: {current_session_id}).")
 
-        # --- 백엔드에 세션 삭제 요청 추가 ---
-        if current_session_id:
-            try:
-                config = Config() # 백엔드 URL을 가져오기 위해 Config 인스턴스 생성
-                backend_url = config.backend_url
-                delete_url = f"{backend_url}/sessions/{current_session_id}"
-                response = requests.delete(delete_url, timeout=10)
-                if response.status_code == 200:
-                    logger.info(f"백엔드 세션 (ID: {current_session_id}) 삭제 성공.")
-                    st.toast(f"서버의 세션 기록(ID: {current_session_id})이 삭제되었습니다.", icon="🗑️")
-                else:
-                    logger.error(f"백엔드 세션 (ID: {current_session_id}) 삭제 실패: {response.status_code} - {response.text}")
-                    st.toast(f"서버 세션 기록 삭제 실패 (오류: {response.status_code})", icon="⚠️")
-            except requests.exceptions.RequestException as e:
-                logger.error(f"백엔드 세션 (ID: {current_session_id}) 삭제 요청 중 오류: {e}")
-                st.toast(f"서버 세션 기록 삭제 중 통신 오류 발생", icon="🚨")
-            except Exception as e:
-                logger.error(f"세션 삭제 중 예기치 않은 오류 (ID: {current_session_id}): {e}", exc_info=True)
-                st.toast(f"세션 삭제 중 알 수 없는 오류 발생", icon="🚨")
-        # --- --------------------------- ---
+        # 신규 세션 ID 생성
+        new_session_id = f"session_{uuid.uuid4()}"
+        logger.info(f"세션 리셋(로컬) 요청 → 새로운 세션 ID 생성: {new_session_id}")
 
-        # Clear all other session state variables
+        # 모든 세션 상태 초기화 (viewport_height 제외)  
         keys_to_clear = list(st.session_state.keys())
         for key in keys_to_clear:
-            if key not in ["session_id", "viewport_height"]:
+            if key not in ["viewport_height"]:
                 del st.session_state[key]
-        
+
+        # 필수 기본값 재설정
+        st.session_state["session_id"] = new_session_id
         st.session_state.messages = []
         st.session_state.is_streaming = False
-
         st.session_state.last_stream_ending_agent = None
         st.session_state.is_first_stream_for_session = True
+
+        # 뷰포트 높이 복원
+        if current_viewport_height is not None:
+            st.session_state.viewport_height = current_viewport_height
 
     @staticmethod
     def add_message(role, content):
@@ -228,7 +215,7 @@ class UI:
 
 
             # Session reset button
-            if st.button("🔄️ 대화 새로고침"):
+            if st.button("🔄️ 대화 새로고침", use_container_width=True):
                 # 리셋 시 viewport_height는 SessionManager.reset_session에서 유지됨
                 SessionManager.reset_session(logger)
                 st.success("대화 기록이 초기화됩니다.")
