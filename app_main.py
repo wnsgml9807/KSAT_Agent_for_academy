@@ -84,25 +84,30 @@ class SessionManager:
 
     @staticmethod
     def reset_session(logger):
-        """Reset the session state, preserving session_id and viewport_height and login info"""
+        """Reset the session state, preserving viewport_height and login info"""
         current_session_id = st.session_state.get("session_id")
-        current_viewport_height = st.session_state.get("viewport_height")
+
         logger.info(f"세션 리셋 요청 (ID: {current_session_id}).")
 
         # 로그인 관련 변수들 저장
         user_info = {key: st.session_state[key] for key in st.session_state.keys() 
-                    if key.startswith("user_") or key == "authenticated"}
+                    if key.startswith("user_") or key == "authenticated" or key == "logged_in" or key == "username"}
 
-        # 세션 변수 정리 (session_id, viewport_height, 로그인 정보 제외)
+        # 세션 변수 정리 (viewport_height만 제외)
         keys_to_clear = list(st.session_state.keys())
         for key in keys_to_clear:
-            if key not in ["session_id", "viewport_height"] and not key.startswith("user_") and key != "authenticated":
+            if key not in ["viewport_height"]:
                 del st.session_state[key]
+        
+        # 새 세션 ID 생성
+        st.session_state.session_id = f"session_{uuid.uuid4()}"
+        logger.info(f"새 세션 ID 생성됨: {st.session_state.session_id}")
         
         # 로그인 정보 복원
         for key, value in user_info.items():
             st.session_state[key] = value
         
+        # 필수 세션 변수 다시 초기화
         st.session_state.messages = []
         st.session_state.is_streaming = False
         st.session_state.last_stream_ending_agent = None
@@ -190,12 +195,11 @@ class UI:
                 """
             )
             
-            # --- 사이드바에서 높이 감지 및 세션 상태 업데이트 ---
-            # 스트리밍 중이 아닐 때만 화면 크기 감지 실행
             if not st.session_state.get("is_streaming", False):
                 try:
-                    screen_data = ScreenData()
-                    stats = screen_data.st_screen_data() # 컴포넌트 로딩 및 값 가져오기
+                    with st.container(border=False, height=1):
+                        screen_data = ScreenData()
+                        stats = screen_data.st_screen_data() # 컴포넌트 로딩 및 값 가져오기
 
                     if stats and "innerHeight" in stats:
                         height = stats.get("innerHeight")
@@ -209,11 +213,7 @@ class UI:
                     pass
                     # 오류 발생 시에도 세션 상태에 viewport_height가 없으면 기본값 설정
                     if "viewport_height" not in st.session_state:
-                         st.session_state.viewport_height = 800 # 기본값 설정
-
-            # 현재 세션의 높이 값 확인 (디버깅용, 로깅 불필요 시 주석 처리)
-            # current_height_in_state = st.session_state.get("viewport_height", 800)
-            # logger.info(f"현재 세션 뷰포트 높이 (사이드바 로딩 시점): {current_height_in_state}px")
+                        st.session_state.viewport_height = 800 # 기본값 설정
             # --- --------------------------------------- ---
 
 
