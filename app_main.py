@@ -20,7 +20,7 @@ class Config:
         self.page_icon = "📚"
         self.layout = "wide"
         self.sidebar_state = "expanded"
-        self.version = "0.6.3"
+        self.version = "0.7.0"
         self.author = "권준희"
         self.where = "연세대학교 교육학과"
         self.contact = "wnsgml9807@naver.com"
@@ -827,7 +827,7 @@ def show_main_app(config, logger):
             input_username = st.text_input("username", key="login_username", placeholder="사용자/기관명" ) # 키 추가/변경
             input_password = st.text_input("key", type="password", key="login_password", placeholder="비밀번호") # 키 추가/변경
         
-            if st.button("로그인", key="login_button", type="primary"): # 키 추가/변경
+            if st.button("로그인", key="login_button", type="primary", use_container_width=True): # 키 추가/변경
                 login_successful = False
                 try:
                     # Secrets에서 사용자 정보 가져오기 (오류 처리 추가)
@@ -878,16 +878,15 @@ def show_main_app(config, logger):
     # 첫 메시지일 경우, 환영 메시지 표시
     if len(st.session_state.messages) == 0:
         with passage_placeholder.container():
-            st.title("Welcome!")
-            st.subheader(":thinking_face: 하단 입력창에 원하는 '분야'를 입력해 보세요!")
-            st.markdown("🎯*예시 1: 인문 지문을 작성해 줘.*")
-            st.markdown("🎯*예시 2: 과학 지문을 작성해 줘.*")
-            st.markdown("🎯*예시 3: 복합 분야 지문을 작성해 줘.*")
+            st.title("Welcome to KSAT Agent!")
+            st.subheader(":thinking_face: 하단 입력창에 원하는 주제를 입력해 보세요!")
+            st.markdown("🎯*예시 1: 논리학 이론을 다룬 지문을 작성해 줘*")
+            st.markdown("🎯*예시 2: 생명과학 분야의 지문을 작성해 줘*")
             st.markdown(" ")
-            st.markdown("ver : 0.6.3")
+            st.markdown("ver : 0.7.0 (06.01)")
             st.code("""
-            - 주제 선정 시 Google 검색 기능 추가
-            - 개념 분해(DCS) 보고서 도입
+            - 새로운 Fine-tuned 모델 탑재로 인한 지문 품질 향상
+            - 절차 간소화 및 사용자 상호작용 강화
             """)
     
     
@@ -897,7 +896,7 @@ def show_main_app(config, logger):
 
     # --- 채팅 입력창 ---
     prompt = st.chat_input(
-        "ex) 인문 지문을 작성하고 싶어",
+        "ex) 논리학 이론을 다룬 지문을 작성해 줘",
         disabled=st.session_state.is_streaming,
         on_submit=on_submit
     )
