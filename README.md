@@ -193,33 +193,6 @@ KSAT Agent는 수능 국어 모의고사 출제 업무를 AI로 자동화하는 
 
 ## 4️⃣ 프로젝트 아키텍처
 
-### A. 프로젝트 폴더 구조
-
-```
-KSAT Agent/
-├── backend/                    # 백엔드 서버
-│   ├── agent_server.py        # FastAPI 메인 서버
-│   ├── graph_factory.py       # LangGraph 워크플로우 정의
-│   ├── tools.py               # AI 에이전트 도구 (RAG, 검색, 핸드오프)
-│   ├── agents_prompt/         # 에이전트별 시스템 프롬프트
-│   ├── DB/                    # 데이터베이스
-│   │   ├── checkpointer/      # LangGraph 세션 체크포인트
-│   │   ├── kice/              # ChromaDB 기출 문제 벡터 저장소
-│   │   └── kice_summary/      # 기출 문제 요약 데이터
-│   ├── Dockerfile             # Docker 컨테이너 설정
-│   ├── docker-compose.yaml    # Docker Compose 설정
-│   ├── requirements.txt       # Python 의존성
-│   └── supervisord.conf       # 프로세스 관리 설정
-└── frontend_academy/           # 프론트엔드 (Streamlit)
-    ├── app_main.py            # Streamlit 메인 앱
-    ├── pages/                 # 페이지 구성
-    │   ├── about.py           # 프로젝트 소개 페이지
-    │   └── about.txt          # 소개 텍스트
-    └── utils/                 # 유틸리티 함수
-                 └── backend_client.py  # 백엔드 API 클라이언트
-```
-### B. 시스템 아키텍처
-
 KSAT Agent의 시스템 구조도입니다.
 
 - **User Layer**: 사용자 브라우저 인터페이스
@@ -341,6 +314,8 @@ sequenceDiagram
     QE-->>S: (필요시) 수정된 문항 전달
     S->>U: (필요시) 수정된 결과물 제시
 ```
+
+
 
 ### 1단계: 사용자 입력 및 서버 수신
 
@@ -598,27 +573,44 @@ def create_compiled_graph(memory):
 
 ### A. ChromaDB 기반 RAG 시스템
 
+#### RAG 작동 구조
+```mermaid
+graph TD
+    subgraph "Agent Layer"
+        A[🎯 Supervisor/Editor Agent]
+    end
+
+    subgraph "Tool Layer"
+        T["retrieve_data (도구)"]
+    end
+
+    subgraph "Data & Model Layer"
+        E["text-embedding-3-large"]
+        DB["📊 ChromaDB<br/>(기출 지문 벡터)"]
+    end
+
+    A -- "1. 지문 검색 요청<br/>(쿼리, 메타데이터 필터)" --> T
+    T -- "2. 쿼리 텍스트 벡터화" --> E
+    E -- "3. 임베딩 벡터 반환" --> T
+    T -- "4. 벡터 + 필터로 DB 검색" --> DB
+    DB -- "5. 유사도 높은<br/>지문/메타데이터 반환" --> T
+    T -- "6. 검색 결과를<br/>ToolMessage로 포맷팅" --> A
+    
+    %% Styling
+    classDef agent fill:#e1f5fe,stroke:#01579b,stroke-width:2px;
+    classDef tool fill:#f3e5f5,stroke:#4a148c,stroke-width:2px;
+    classDef data fill:#fff3e0,stroke:#e65100,stroke-width:2px;
+
+    class A agent;
+    class T tool;
+    class E,DB data;
+```
+
 #### ChromaDB 선택 이유
 - **경량성**: SQLite 기반으로 별도 서버 불필요, 컨테이너 환경에 최적화
 - **임베딩 통합**: OpenAI embedding 함수 내장으로 벡터 변환 자동화
 - **메타데이터 필터링**: 분야별/연도별 정확한 필터링 지원
 - **의미적 검색**: 코사인 유사도 기반 고품질 의미 검색
-
-#### 임베딩 구조 설계
-```
-📊 ChromaDB 컬렉션: kice_materials_v2
-├── 🎯 지문 (documents): text-embedding-3-large로 벡터화
-└── 📋 메타데이터 (metadatas):
-    ├── field: "인문,사회,과학,기술,예술" (분야)
-    ├── year: "2017~2025" (출제년도)
-    ├── exam_type: "수능,6월,9월" (시험 구분)
-    └── qna_details: JSON {
-        "questions": [...],  # 문항 목록
-        "answers": [...],    # 정답 목록  
-        "explanations": [...], # 해설 목록
-        "stats": {...}       # 정답률 등 통계
-    }
-```
 
 **설계 취지**: 지문 내용만 벡터화하고 문항/해설/정답률은 메타데이터로 분리하여 **지문 단위 의미 검색 극대화**
 
@@ -626,47 +618,33 @@ def create_compiled_graph(memory):
 
 ```python
 @tool
-async def retrieve_data(
-    query: str,
-    tool_call_id: Annotated[str, InjectedToolCallId],
-    state: Annotated[dict, InjectedState],
-    field: List[Literal['인문','사회','예술','기술','과학']] | None = None,
-):
+async def retrieve_data(query: str, field: list[str] | None = None, **kwargs):
     """기출 DB에서 텍스트 쿼리와 메타데이터 필터를 사용하여 관련 지문을 검색합니다."""
     
-    # ChromaDB 연결 및 임베딩 함수 설정
-    client = chromadb.PersistentClient(path=db_path, settings=Settings(anonymized_telemetry=False))
-    collection = client.get_collection(
-        name="kice_materials_v2",
-        embedding_function=OpenAIEmbeddingFunction(
-            model_name="text-embedding-3-large",
-            api_key=os.environ.get("OPENAI_API_KEY")
-        )
+    # 1. ChromaDB 클라이언트 및 컬렉션 가져오기
+    collection = get_chroma_collection("kice_materials_v2")
+    
+    # 2. 메타데이터 필터 생성 (분야별 필터링)
+    where_filter = {"field": {"$in": field}} if field else {}
+    
+    # 3. 비동기로 쿼리 실행
+    results = await asyncio.to_thread(
+        collection.query,
+        query_texts=[query],
+        n_results=5,
+        where=where_filter,
+        include=['documents', 'metadatas']
     )
     
-    # 분야별 필터링 처리
-    if field:
-        for field_item in fields_list:
-            where_filter = {"field": field_item}
-            raw_results = await asyncio.to_thread(
-                collection.query,
-                query_texts=[query],
-                n_results=n_results,
-                where=where_filter,
-                include=['documents', 'metadatas', 'distances']
-            )
-            
-    # 유사도 기준 정렬 및 결과 포맷팅
-    all_results_intermediate.sort(key=lambda x: x["distance"])
-    final_results = all_results_intermediate[:n_results]
+    # 4. 결과 포맷팅 및 ToolMessage로 반환
+    formatted_results = format_retrieval_results(results)
+    tool_call_id = kwargs.get("tool_call_id")
     
-    # ToolMessage로 상태 업데이트
-    tool_message = ToolMessage(content=reference_content, tool_call_id=tool_call_id)
-    return Command(update={"messages": state["messages"] + [tool_message]})
+    return ToolMessage(content=formatted_results, tool_call_id=tool_call_id)
 ```
 
 **동작 원리**:
-1. **쿼리 임베딩**: 입력 텍스트를 text-embedding-3-large로 벡터화
+1. **쿼리 임베딩**: 입력 텍스트를 `text-embedding-3-large`로 벡터화
 2. **의미적 검색**: ChromaDB가 코사인 유사도로 관련 지문 검색
 3. **메타데이터 필터**: 분야/연도 조건으로 결과 정제
 4. **결과 통합**: 여러 분야 검색 시 유사도 기준 통합 정렬
@@ -681,37 +659,24 @@ async def google_search_node(
     state: Annotated[dict, InjectedState],
     tool_call_id: Annotated[str, InjectedToolCallId]
 ):
-    """Google 검색 도구, 최신 정보 검색 시 사용합니다."""
-    
-    from google import genai
-    from google.genai.types import Tool, GenerateContentConfig, GoogleSearch
-    
-    # Google Gemini + Search 통합 호출
+    """최신 정보나 특수 주제에 대해 Google 검색을 수행하는 도구입니다."""
+    # Google Gemini와 Search API를 통합하여 호출
     client = genai.Client()
-    google_search_tool = Tool(google_search=GoogleSearch())
-    
     response = client.models.generate_content(
         model="gemini-2.0-flash",
         contents=f"주제에 대한 상세한 원리를 조사: {query}",
-        config=GenerateContentConfig(
-            tools=[google_search_tool],
-            response_modalities=["TEXT"],
-        )
+        tools=[Tool(google_search=GoogleSearch())]
     )
     
-    # 검색 결과와 출처 정보 추출
+    # 검색 결과와 출처 정보 추출 및 포맷팅
     result = ''.join([part.text for part in response.candidates[0].content.parts])
-    grounding_sources = [
-        f"- [{site.web.title}]({site.web.uri})"
-        for site in response.candidates[0].grounding_metadata.grounding_chunks
-    ]
+    sources = [site.web.uri for site in response.candidates[0].grounding_metadata.grounding_chunks]
     
-    # 결과를 ToolMessage로 상태 업데이트
-    tool_message = ToolMessage(
-        content=f"### Google 검색 결과\n{result}\n#### 출처\n" + '\n'.join(grounding_sources),
+    # 결과를 ToolMessage로 반환
+    return ToolMessage(
+        content=f"Google 검색 결과:\n{result}\n\n출처: {', '.join(sources)}",
         tool_call_id=tool_call_id
     )
-    return Command(update={"messages": state["messages"] + [tool_message]})
 ```
 
 **특징**:
@@ -721,78 +686,41 @@ async def google_search_node(
 
 ### D. Handoff 도구
 
-#### call_passage_editor 도구
+`Supervisor`가 `Passage Editor`나 `Question Editor`에게 작업 제어권을 넘겨주기 위해 사용하는 특수 도구입니다. 이 도구들은 LangGraph의 `Command` 객체를 반환하여 특정 에이전트 노드로 작업을 명시적으로 전달(Handoff)하는 역할을 합니다. `call_passage_editor`와 `call_question_editor`가 이 패턴을 따릅니다.
+
+#### Handoff 도구 구현 패턴
 
 ```python
+from typing import Annotated
+from langchain_core.tools import tool
+from langgraph.graph import Command, Send
+from langgraph.prebuilt import ToolMessage
+
 @tool
-async def call_passage_editor(
-    summary: Optional[str],
-    request: Optional[str],
-    state: Annotated[dict, InjectedState],
-    tool_call_id: Annotated[str, InjectedToolCallId],
+async def call_specific_agent(
+    # ... (agent-specific arguments)
+    state: Annotated[dict, "state"],
+    tool_call_id: Annotated[str, "tool_call_id"],
 ):
-    """passage_editor 에이전트를 호출하는 도구입니다."""
+    """[Agent Name] 에이전트를 호출하여 [Task]를 지시합니다."""
     
-    pre_passage = state.get("passage", "")
-    tool_message = ToolMessage(
-        content="passage_editor 에이전트를 호출합니다.",
-        tool_call_id=tool_call_id,
-    )
+    # 1. 타겟 에이전트로 보낼 데이터(payload) 구성
+    payload = {
+        # ... (arguments for the target agent)
+    }
     
-    # LangGraph Command로 에이전트 간 제어권 이양
+    # 2. 제어권 이양을 위한 Command 객체 생성 및 반환
     return Command(
-        graph=Command.PARENT,  # 상위 그래프 수준에서 실행
-        goto=Send("passage_editor", {  # passage_editor 노드로 이동
-            "summary": summary, 
-            "request": request, 
-            "passage": pre_passage
-        }),
-        update={
-            "messages": state["messages"] + [tool_message],
-            "current_agent": "passage_editor",  # 현재 활성 에이전트 표시
-        }
+        # 3. 'goto=Send'를 사용하여 타겟 노드와 payload 지정
+        goto=Send("[agent_name_to_call]", payload),
     )
 ```
 
-#### call_question_editor 도구
-
-```python
-@tool
-async def call_question_editor(
-    request: Optional[str],
-    passage: str,
-    state: Annotated[dict, InjectedState],
-    tool_call_id: Annotated[str, InjectedToolCallId],
-):
-    """question_editor 에이전트를 호출하는 도구입니다."""
-    
-    question = state.get("question", "")
-    tool_message = ToolMessage(
-        content="question_editor 에이전트를 호출합니다.",
-        tool_call_id=tool_call_id,
-    )
-    
-    # 지문과 함께 Question Editor로 제어권 이양
-    return Command(
-        graph=Command.PARENT,
-        goto=Send("question_editor", {
-            "passage": passage,  # 필수: 문항 출제 대상 지문
-            "request": request,  # 선택: 사용자 세부 요청사항
-            "question": question
-        }),
-        update={
-            "messages": state["messages"] + [tool_message],
-            "current_agent": "question_editor",
-        }
-    )
-```
-
-**Handoff 메커니즘**:
-1. **도구 호출**: Supervisor가 상황에 맞는 call_* 도구 선택
-2. **Command 반환**: LangGraph의 `Command` 객체로 제어권 이양 명령
-3. **노드 이동**: `goto=Send()`로 특정 에이전트 노드로 직접 이동
-4. **상태 전달**: 필요한 컨텍스트(지문, 요청사항 등)를 타겟 에이전트에 전달
-5. **자동 복귀**: 작업 완료 시 `return` 노드를 거쳐 자동으로 Supervisor로 복귀
+#### Handoff 메커니즘
+1.  **도구 호출**: `Supervisor`가 상황에 맞는 `call_*` 도구를 선택합니다.
+2.  **Command 반환**: 도구는 `Command` 객체를 반환하여 제어권 이양을 명령합니다.
+3.  **노드 이동**: `goto=Send("[agent_name]", ...)` 설정을 통해 지정된 에이전트 노드로 컨텍스트와 함께 제어권이 넘어갑니다.
+4.  **자동 복귀**: 하위 에이전트의 작업이 완료되면, 제어권은 `return` 노드를 거쳐 다시 `Supervisor`에게 자동으로 돌아옵니다.
 
 
 ---
@@ -808,12 +736,35 @@ async def call_question_editor(
 - **운영**: Supervisor로 프로세스 관리, 장애 자동복구
 
 
-### B. FastAPI 서버 구조 (agent_server.py)
+### B. FastAPI 통신 워크플로우
 
-- **비동기 REST API**: `/chat/stream` 등 엔드포인트 제공
-- **세션별 LangGraph 인스턴스/DB 관리**
-- **SSE 기반 실시간 스트리밍 응답**
-- **CORS, 보안, 세션 만료 자동 정리**
+- 비동기 REST API  `/chat/stream` 엔드포인트
+- 세션별 LangGraph 인스턴스 관리
+- SSE 기반 실시간 스트리밍 응답
+- 만료 세션 checkpoint 파일 자동 정리
+- 워크플로우
+
+```mermaid
+sequenceDiagram
+    participant User as 👤 사용자
+    participant Frontend as 🖥️ Streamlit UI
+    participant Backend as ⚙️ FastAPI 서버
+    participant Engine as 🧠 LangGraph 엔진
+    
+    User->>Frontend: 주제/요청 입력
+    Frontend->>Backend: POST /chat/stream (세션 ID, 프롬프트)
+    
+    Backend->>Engine: graph.astream_events(inputs) 호출
+    
+    loop 실시간 이벤트 스트림
+        Engine-->>Backend: Agent/Tool 실행 이벤트 청크
+        Backend-->>Frontend: SSE 이벤트 (AI 메시지, 상태 변경 등)
+        Frontend-->>User: UI에 실시간 결과 표시
+    end
+```
+
+
+
 
 ```python
 from fastapi import FastAPI
@@ -905,68 +856,6 @@ COPY . .
 ENV PYTHONUNBUFFERED=1
 EXPOSE 8000
 CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
-```
-
-**docker-compose.yaml**
-```yaml
-services:
-  ksat-agent:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    ports:
-      - "8000:8000"
-    volumes:
-      - ./DB/kice:/app/DB/kice
-      - ./DB/checkpointer:/app/DB/checkpointer
-    env_file:
-      - .env
-    restart: always
-```
-
-**supervisord.conf**
-```
-[supervisord]
-nodaemon=true
-user=root
-logfile=/dev/null
-logfile_maxbytes=0
-logfile_backups=0
-
-[program:ksat-agent]
-command=python /app/agent_server.py
-directory=/app
-autostart=true
-autorestart=true
-startretries=5
-numprocs=1
-redirect_stderr=true
-stdout_logfile=/dev/stdout
-stdout_logfile_maxbytes=0
-stderr_logfile=/dev/stderr
-stderr_logfile_maxbytes=0
-```
-
-**requirements.txt**
-```
-langchain-core
-langgraph
-fastapi
-uvicorn
-sse-starlette
-pydantic
-python-dotenv
-langchain-anthropic
-chromadb==1.0.8
-openai
-langchain-openai
-langchain-google-genai
-langchain-community
-gunicorn
-asyncio
-aiosqlite
-langgraph.checkpoint.sqlite
-google-genai
 ```
 
 
