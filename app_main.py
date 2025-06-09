@@ -82,6 +82,12 @@ class SessionManager:
             st.session_state.last_stream_ending_agent = None # 또는 "supervisor"로 초기화 가능
         if "is_first_stream_for_session" not in st.session_state:
             st.session_state.is_first_stream_for_session = True
+            
+        # 최신 아티팩트 저장을 위한 세션 변수 추가
+        if "latest_passage" not in st.session_state:
+            st.session_state.latest_passage = None
+        if "latest_question" not in st.session_state:
+            st.session_state.latest_question = None
 
     @staticmethod
     def reset_session(logger):
@@ -113,6 +119,8 @@ class SessionManager:
         st.session_state.is_streaming = False
         st.session_state.last_stream_ending_agent = None
         st.session_state.is_first_stream_for_session = True
+        st.session_state.latest_passage = None
+        st.session_state.latest_question = None
         
         # 페이지 새로고침 수행
         st.toast("대화가 초기화되었습니다.", icon="🔄")
@@ -240,7 +248,7 @@ class UI:
     def create_layout(viewport_height):
         """Create the main layout with columns"""
         # Create main columns
-        chat_column, artifact_column = st.columns([2, 5], vertical_alignment="top", gap="medium")
+        chat_column, artifact_column = st.columns([1, 2], vertical_alignment="top", gap="medium")
         
         # Chat container
         with chat_column:
@@ -430,8 +438,8 @@ class MessageRenderer:
         
         
         if agent == "passage_editor":
-            with self.passage_placeholder:
-                st.markdown(item["content"], unsafe_allow_html=True)
+            # 세션 상태에만 저장하고 렌더링하지 않음
+            st.session_state.latest_passage = item["content"]
         # question_editor 처리 부분 제거
     
     def _render_tool_item(self, item, placeholders, idx, viewport_height):
@@ -479,9 +487,8 @@ class MessageRenderer:
             with placeholders[idx].status("문제 작성 완료", state="complete", expanded=False):
                 pass
             
-            # question artifact에 바로 출력
-            with self.question_placeholder:
-                components.html(css + tool_content, height=viewport_height-10, scrolling=True)
+            # 세션 상태 업데이트와 동시에 실시간 렌더링
+            st.session_state.latest_question = css + tool_content
         # Mermaid 도구: 확장된 완료 상태로 표시
         elif tool_name == "mermaid_tool": # 내부 로직은 원래 이름 사용 유지
             with placeholders[idx].status(f"📊 개념 지도", state="complete", expanded=True):
@@ -753,7 +760,8 @@ class BackendClient:
                             with placeholders[current_idx].status("문제 작성 완료", state="complete", expanded=False):
                                 pass
                             
-                            # question artifact에 바로 출력
+                            # 세션 상태 업데이트와 동시에 실시간 렌더링
+                            st.session_state.latest_question = css + tool_content
                             with self.question_placeholder:
                                 components.html(css + tool_content, height=viewport_height-10, scrolling=True)
                             current_idx += 1
@@ -849,7 +857,8 @@ class BackendClient:
             except Exception as e:
                 pass
             
-            # Update the passage content - st.markdown 사용 (SVG 호환성을 위해)
+            # 세션 상태 업데이트와 동시에 실시간 렌더링
+            st.session_state.latest_passage = text
             with self.passage_placeholder:
                 st.markdown(text, unsafe_allow_html=True)
                 
@@ -1007,6 +1016,17 @@ def show_main_app(config, logger):
     # --- 기존 메시지 표시 ---
     for message in st.session_state.messages:
         message_renderer.render_message(message, viewport_height)
+    
+    # --- 최신 아티팩트 표시 ---
+    # 최신 지문 표시
+    if st.session_state.get("latest_passage"):
+        with passage_placeholder:
+            st.markdown(st.session_state.latest_passage, unsafe_allow_html=True)
+    
+    # 최신 문항 표시
+    if st.session_state.get("latest_question"):
+        with question_placeholder:
+            components.html(st.session_state.latest_question, height=viewport_height-10, scrolling=True)
 
     # --- 채팅 입력창 ---
     prompt = st.chat_input(
