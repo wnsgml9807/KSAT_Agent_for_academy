@@ -21,7 +21,7 @@ class Config:
         self.page_icon = "📚"
         self.layout = "wide"
         self.sidebar_state = "expanded"
-        self.version = "0.7.0"
+        self.version = "0.7.3"
         self.author = "권준희"
         self.where = "연세대학교 교육학과"
         self.contact = "wnsgml9807@naver.com"
@@ -764,6 +764,7 @@ class BackendClient:
                             st.session_state.latest_question = css + tool_content
                             with self.question_placeholder:
                                 components.html(css + tool_content, height=viewport_height-10, scrolling=True)
+                                self.logger.info(f'User [{st.session_state.get("username", "anonymous")}]: 문항 작성 완료 \n{tool_content}')
                             current_idx += 1
                         elif tool_name == "google_search_node":
                             with placeholders[current_idx].status(f"🔍 Google 검색", state="complete", expanded=False):
@@ -1005,7 +1006,7 @@ def show_main_app(config, logger):
             st.markdown("🎯*예시 1: 논리학 이론을 다룬 지문을 작성해 줘*")
             st.markdown("🎯*예시 2: 생명과학 분야의 지문을 작성해 줘*")
             st.markdown(" ")
-            st.markdown("ver : 0.7.1 (06.03)")
+            st.markdown("ver : 0.7.3 (06.10)")
             st.code("""
             - 새로운 Fine-tuned 모델 탑재로 인한 지문 품질 향상
             - 문제 품질 향상 및 절차 간소화
@@ -1078,8 +1079,8 @@ def main():
     # Define pages using st.Page
     # Use a lambda to pass config and logger to the main app function
     pages = [
-        Page(lambda: show_main_app(config, logger), title="Agent", icon="🤖", default=True),
-        Page(config.about_page_path, title="About", icon="📄")
+        Page(config.about_page_path, title="프로젝트 소개", icon="📄"),
+        Page(lambda: show_main_app(config, logger), title="출제 AI 사용하기", icon="🤖", default=True)
     ]
     # --- End Page Definition ---
 
