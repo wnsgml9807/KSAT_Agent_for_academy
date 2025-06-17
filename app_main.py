@@ -21,7 +21,7 @@ class Config:
         self.page_icon = "📚"
         self.layout = "wide"
         self.sidebar_state = "expanded"
-        self.version = "0.7.3"
+        self.version = "0.7.4"
         self.author = "권준희"
         self.where = "연세대학교 교육학과"
         self.contact = "wnsgml9807@naver.com"
@@ -194,7 +194,7 @@ class UI:
             
             st.info(
                 f"""
-                **제작자:** {config.author}
+                **문의 :**
                 {config.contact}
                 """
             )
@@ -938,8 +938,12 @@ def show_main_app(config, logger):
     # Initialize session (ensures messages/session_id/viewport_height/login status exist)
     SessionManager.initialize_session(logger)
 
-    # --- 로그인 확인 및 로그인 폼 처리 ---
-    if not st.session_state.get('logged_in', False):
+    # --- 로그인 모드 확인 ---
+    # st.secrets에서 LOGIN_MODE 값을 가져옵니다. 값이 없으면 "off"로 간주합니다.
+    LOGIN_MODE = st.secrets.get("LOGIN_MODE", "off")
+
+    # --- 로그인 확인 및 로그인 폼 처리 (LOGIN_MODE가 "on"일 경우) ---
+    if LOGIN_MODE == "on" and not st.session_state.get('logged_in', False):
         # 컬럼을 사용하여 로그인 폼을 가운데 정렬 (wide 레이아웃에서)
         col1, col2, col3 = st.columns([1, 1.3, 1]) # 비율 조절 가능 (예: [1, 2, 1])
 
@@ -1001,18 +1005,17 @@ def show_main_app(config, logger):
     # 첫 메시지일 경우, 환영 메시지 표시
     if len(st.session_state.messages) == 0:
         with passage_placeholder.container():
-            st.title("Welcome to KSAT Agent!")
-            st.subheader(":thinking_face: '원하는 분야'를 먼저 입력해 보세요!")
-            st.markdown("🎯*예시 1: 논리학 이론을 다룬 지문을 작성해 줘*")
-            st.markdown("🎯*예시 2: 생명과학 분야의 지문을 작성해 줘*")
-            st.markdown(" ")
-            st.markdown("ver : 0.7.3 (06.10)")
+            st.title("KSAT Agent")
+            st.markdown("ver : 0.7.4 (06.17)")
             st.code("""
             - 새로운 Fine-tuned 모델 탑재로 인한 지문 품질 향상
             - 문제 품질 향상 및 절차 간소화
             - 사용자 상호작용 강화
             """)
-    
+            st.subheader(":bulb: 분야/주제를 입력해 보세요.")
+            st.markdown(":white_check_mark: **예시 1:** 인문/사회/과학/기술/예술 분야의 지문을 작성해 줘")
+            st.markdown(":white_check_mark: **예시 2:** 칸트의 미적 판단 이론을 다룬 지문을 작성해 줘")
+            st.markdown(" ")
     
     # --- 기존 메시지 표시 ---
     for message in st.session_state.messages:
@@ -1080,7 +1083,8 @@ def main():
     # Use a lambda to pass config and logger to the main app function
     pages = [
         Page(config.about_page_path, title="프로젝트 소개", icon="📄"),
-        Page(lambda: show_main_app(config, logger), title="출제 AI 사용하기", icon="🤖", default=True)
+        Page(lambda: show_main_app(config, logger), title="출제 AI 사용하기", icon="🤖"),
+        Page("pages/collection.py", title="출제 결과물 예시", icon="📖", default=True)
     ]
     # --- End Page Definition ---
 
